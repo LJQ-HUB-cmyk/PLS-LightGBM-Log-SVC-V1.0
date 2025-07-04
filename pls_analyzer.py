@@ -58,13 +58,13 @@ PROCESSED_CSV_PATH = os.path.join(SCRIPT_DIR, 'pls_processed.csv')
 # 运行模式配置:
 # True  -> 运行参数优化，耗时较长，但可能找到更优策略。
 # False -> 使用默认权重进行快速分析和推荐。
-ENABLE_OPTUNA_OPTIMIZATION = False
+ENABLE_OPTUNA_OPTIMIZATION = True
 
 # --------------------------
 # --- 策略开关配置 ---
 # --------------------------
 # 是否启用最终推荐组合层面的"反向思维"策略 (移除得分最高的几注)
-ENABLE_FINAL_COMBO_REVERSE = False
+ENABLE_FINAL_COMBO_REVERSE = True
 # 在启用反向思维并移除组合后，是否从候选池中补充新的组合以达到目标数量
 ENABLE_REVERSE_REFILL = True
 
@@ -120,9 +120,9 @@ DEFAULT_WEIGHTS = {
     'COMBINATION_SUM_RANGE_MATCH_BONUS': 8.0,
 
     # --- 关联规则挖掘(ARM)参数与奖励 ---
-    'ARM_MIN_SUPPORT': 0.02,
-    'ARM_MIN_CONFIDENCE': 0.60,
-    'ARM_MIN_LIFT': 1.20,
+    'ARM_MIN_SUPPORT': 0.01,
+    'ARM_MIN_CONFIDENCE': 0.40,
+    'ARM_MIN_LIFT': 1.10,
     'ARM_COMBINATION_BONUS_WEIGHT': 15.0,
     'ARM_BONUS_LIFT_FACTOR': 0.50,
     'ARM_BONUS_CONF_FACTOR': 0.30,
@@ -1223,7 +1223,7 @@ def objective(trial: optuna.trial.Trial, df_for_opt: pd.DataFrame, ml_lags: List
         _, backtest_stats = run_backtest(df_for_opt, ml_lags, full_trial_weights, arm_rules, OPTIMIZATION_BACKTEST_PERIODS)
         
     # 定义一个分数来衡量表现，高奖金等级的权重更高
-    prize_weights = {'直选': 1000, '组选3': 333, '组选6': 167}
+    prize_weights = {'直选': 1040, '组选3': 346, '组选6': 173}
     score = sum(prize_weights.get(p, 0) * c for p, c in backtest_stats.get('prize_counts', {}).items())
     return score
 
@@ -1358,7 +1358,7 @@ def main():
         total_bets = len(backtest_results_df)
         logger.info(f"回测周期: 最近 {num_periods_tested} 期 | 每期注数: {num_combos_per_period} | 总投入注数: {total_bets}")
         logger.info("\n--- 1. 奖金与回报分析 ---")
-        prize_dist, prize_values = backtest_stats.get('prize_counts', {}), {'直选': 1000, '组选3': 333, '组选6': 167}
+        prize_dist, prize_values = backtest_stats.get('prize_counts', {}), {'直选': 1040, '组选3': 346, '组选6': 173}
         total_revenue = sum(prize_values.get(p, 0) * c for p, c in prize_dist.items())
         total_cost = total_bets * 2
         roi = (total_revenue - total_cost) * 100 / total_cost if total_cost > 0 else 0
@@ -1404,8 +1404,20 @@ def main():
     
     # 9. 微信推送
     try:
-        from pls_wxpusher import send_analysis_report
+        from pls_wxpusher import send_analysis_report, send_wxpusher_message_fallback
         logger.info("正在发送微信推送...")
+        
+        # 准备复式参考数据
+        duplex_reference = None
+        if final_scores and final_scores.get('red_1'):
+            top_pos1 = sorted([n for n, _ in sorted(final_scores['red_1'].items(), key=lambda x: x[1], reverse=True)[:5]])
+            top_pos2 = sorted([n for n, _ in sorted(final_scores['red_2'].items(), key=lambda x: x[1], reverse=True)[:5]])
+            top_pos3 = sorted([n for n, _ in sorted(final_scores['red_3'].items(), key=lambda x: x[1], reverse=True)[:5]])
+            duplex_reference = {
+                'pos1': top_pos1,
+                'pos2': top_pos2,
+                'pos3': top_pos3
+            }
         
         # 发送分析报告推送
         push_result = send_analysis_report(
@@ -1413,13 +1425,36 @@ def main():
             period=last_period + 1,
             recommendations=final_rec_strings,
             optuna_summary=optuna_summary,
-            backtest_stats=backtest_stats
+            backtest_stats=backtest_stats,
+            duplex_reference=duplex_reference
         )
         
         if push_result.get('success'):
             logger.info("微信推送发送成功")
         else:
             logger.warning(f"微信推送发送失败: {push_result.get('error', '未知错误')}")
+            
+            # 如果主要方法失败，尝试备用方法
+            logger.info("尝试使用备用推送方法...")
+            try:
+                # 构建简化的推送内容
+                simple_content = f"🎯 排列三第{last_period + 1}期预测报告\n\n📋 推荐号码:\n"
+                for i, rec in enumerate(final_rec_strings[:5]):  # 只发送前5注
+                    simple_content += f"第{i+1}注: {rec}\n"
+                simple_content += "\n⚠️ 详细分析请查看系统日志"
+                
+                fallback_result = send_wxpusher_message_fallback(
+                    content=simple_content,
+                    title=f"🎯 排列三第{last_period + 1}期预测 (备用推送)"
+                )
+                
+                if fallback_result.get('success'):
+                    logger.info("备用微信推送发送成功")
+                else:
+                    logger.warning(f"备用微信推送也失败: {fallback_result.get('error', '未知错误')}")
+                    
+            except Exception as fallback_e:
+                logger.error(f"备用微信推送异常: {fallback_e}")
             
     except ImportError:
         logger.warning("微信推送模块未找到，跳过推送功能")
@@ -1488,4 +1523,4 @@ if __name__ == "__main__":
     logger.addHandler(console_handler)
     
     # 运行主程序
-    main() 
+    main()

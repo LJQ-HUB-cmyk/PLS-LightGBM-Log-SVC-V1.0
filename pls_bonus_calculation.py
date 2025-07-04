@@ -40,10 +40,10 @@ MAX_NORMAL_RECORDS = 10  # 保留最近10次评估
 MAX_ERROR_LOGS = 20      # 保留最近20条错误日志
 
 # 排列三奖金对照表 (元)
-PRIZE_TABLE = {
-    "直选": 1000,    # 直选奖金
-    "组选3": 333,    # 组选三奖金（三个数字都不同）
-    "组选6": 167,    # 组选六奖金（有两个数字相同）
+PRIZE_VALUES = {
+    "直选": 1040,    # 直选奖金：所选号码与中奖号码相同且顺序一致
+    "组选3": 346,    # 组选3奖金：中奖号码中任意两位数字相同，所选号码与中奖号码相同且顺序不限
+    "组选6": 173,    # 组选6奖金：所选号码与中奖号码相同且顺序不限
 }
 
 # ==============================================================================
@@ -159,32 +159,68 @@ def find_matching_report(target_period: str) -> Optional[str]:
     log_message(f"找到匹配的最新报告: {os.path.basename(latest_report)}", "INFO")
     return latest_report
 
-def parse_recommendations_from_report(content: str) -> List[List[int]]:
+def parse_recommendations_from_report(content: str) -> Dict:
     """
-    从分析报告内容中解析出排列三推荐号码。
+    从分析报告内容中解析出排列三推荐号码（单式和复式）。
 
     Args:
         content (str): 分析报告的文本内容。
 
     Returns:
-        List[List[int]]: 推荐号码列表，每个元素是 [百位, 十位, 个位]
+        Dict: 包含单式推荐和复式推荐的字典
+        {
+            'single': List[List[int]],  # 单式推荐
+            'duplex': Dict,             # 复式推荐
+            'target_period': str        # 目标期号
+        }
     """
-    # 解析推荐号码
-    rec_pattern = re.compile(r'注\s*\d+:\s*\[([0-9\s,]+)\]')
-    recommendations = []
+    result = {
+        'single': [],
+        'duplex': {},
+        'target_period': ''
+    }
     
+    # 解析目标期号
+    target_match = re.search(r'本次预测目标:\s*第\s*(\d+)\s*期', content)
+    if target_match:
+        result['target_period'] = target_match.group(1)
+    
+    # 解析单式推荐号码
+    rec_pattern = re.compile(r'注\s*\d+:\s*\[([0-9\s,]+)\]')
     for match in rec_pattern.finditer(content):
         try:
-            # 提取数字
             numbers_str = match.group(1)
             numbers = [int(x.strip()) for x in re.findall(r'\d', numbers_str)]
             if len(numbers) == 3 and all(0 <= num <= 9 for num in numbers):
-                recommendations.append(numbers)
+                result['single'].append(numbers)
         except ValueError:
             continue
     
-    log_message(f"从报告中解析出 {len(recommendations)} 个推荐号码")
-    return recommendations
+    # 解析复式推荐号码
+    duplex_patterns = {
+        '百位': re.compile(r'百位\s*\(Top\s*\d+\):\s*([0-9\s]+)'),
+        '十位': re.compile(r'十位\s*\(Top\s*\d+\):\s*([0-9\s]+)'),
+        '个位': re.compile(r'个位\s*\(Top\s*\d+\):\s*([0-9\s]+)')
+    }
+    
+    for position, pattern in duplex_patterns.items():
+        match = pattern.search(content)
+        if match:
+            try:
+                numbers_str = match.group(1)
+                numbers = [int(x.strip()) for x in numbers_str.split() if x.strip().isdigit()]
+                numbers = [num for num in numbers if 0 <= num <= 9]
+                if numbers:
+                    result['duplex'][position] = numbers
+            except ValueError:
+                continue
+    
+    log_message(f"从报告中解析出 {len(result['single'])} 个单式推荐号码")
+    if result['duplex']:
+        duplex_info = ', '.join([f"{pos}: {nums}" for pos, nums in result['duplex'].items()])
+        log_message(f"从报告中解析出复式推荐: {duplex_info}")
+    
+    return result
 
 def calculate_prize(recommendations: List[List[int]], prize_numbers: List[int]) -> Tuple[int, Dict, List]:
     """
@@ -205,7 +241,7 @@ def calculate_prize(recommendations: List[List[int]], prize_numbers: List[int]) 
         # 检查直选
         if rec_numbers == prize_numbers:
             prize_level = "直选"
-            prize_amount = PRIZE_TABLE[prize_level]
+            prize_amount = PRIZE_VALUES[prize_level]
             total_prize += prize_amount
             prize_counts[prize_level] = prize_counts.get(prize_level, 0) + 1
             winning_details.append({
@@ -227,7 +263,7 @@ def calculate_prize(recommendations: List[List[int]], prize_numbers: List[int]) 
             else:
                 prize_level = "组选3"  # 有重复数字
             
-            prize_amount = PRIZE_TABLE[prize_level]
+            prize_amount = PRIZE_VALUES[prize_level]
             total_prize += prize_amount
             prize_counts[prize_level] = prize_counts.get(prize_level, 0) + 1
             winning_details.append({
@@ -239,16 +275,40 @@ def calculate_prize(recommendations: List[List[int]], prize_numbers: List[int]) 
     
     return total_prize, prize_counts, winning_details
 
-def format_winning_details(winning_details: List[Dict], prize_numbers: List[int]) -> List[str]:
-    """格式化中奖详情为报告字符串"""
+def format_winning_details(winning_details: List[Dict], prize_numbers: List[int], duplex_data: Dict = None, target_period: str = "") -> List[str]:
+    """格式化中奖详情为报告字符串，包含复式信息"""
+    lines = []
+    
+    # 添加期号和开奖号码信息
+    if target_period:
+        lines.append(f"第{target_period}期开奖号码: {prize_numbers[0]}{prize_numbers[1]}{prize_numbers[2]}")
+    else:
+        lines.append(f"开奖号码: {prize_numbers[0]}{prize_numbers[1]}{prize_numbers[2]}")
+    lines.append("")
+    
+    # 添加中奖详情
     if not winning_details:
-        return ["本期推荐号码未中奖。"]
+        lines.append("本期推荐号码未中奖。")
+    else:
+        lines.append("🎉 中奖详情:")
+        for detail in winning_details:
+            numbers_str = f"{detail['numbers'][0]}{detail['numbers'][1]}{detail['numbers'][2]}"
+            lines.append(f"第{detail['ticket_id']}注: {numbers_str} - {detail['prize_level']} - {detail['amount']}元")
     
-    lines = [f"开奖号码: {prize_numbers[0]}{prize_numbers[1]}{prize_numbers[2]}", ""]
+    lines.append("")
     
-    for detail in winning_details:
-        numbers_str = f"{detail['numbers'][0]}{detail['numbers'][1]}{detail['numbers'][2]}"
-        lines.append(f"第{detail['ticket_id']}注: {numbers_str} - {detail['prize_level']} - {detail['amount']}元")
+    # 添加复式推荐信息
+    if duplex_data:
+        lines.append("📋 复式推荐参考:")
+        for position, numbers in duplex_data.items():
+            numbers_str = ' '.join(map(str, numbers))
+            lines.append(f"  {position}: {numbers_str}")
+        lines.append("")
+        
+        # 计算复式总注数
+        if len(duplex_data) == 3:
+            total_combinations = len(duplex_data['百位']) * len(duplex_data['十位']) * len(duplex_data['个位'])
+            lines.append(f"复式总注数: {total_combinations}注")
     
     return lines
 
@@ -339,7 +399,11 @@ def main_process():
         if not report_content:
             raise Exception(f"无法读取报告文件: {report_file}")
         
-        recommendations = parse_recommendations_from_report(report_content)
+        parsed_data = parse_recommendations_from_report(report_content)
+        recommendations = parsed_data['single']
+        duplex_data = parsed_data['duplex']
+        target_period = parsed_data['target_period']
+        
         if not recommendations:
             raise Exception("报告中未找到有效的推荐号码")
         
@@ -350,8 +414,13 @@ def main_process():
         # 计算中奖情况
         total_prize, prize_counts, winning_details = calculate_prize(recommendations, prize_numbers)
         
-        # 格式化结果
-        winning_details_formatted = format_winning_details(winning_details, prize_numbers)
+        # 格式化结果（包含复式信息）
+        winning_details_formatted = format_winning_details(
+            winning_details, 
+            prize_numbers, 
+            duplex_data, 
+            target_period or eval_period
+        )
         
         # 准备报告条目
         report_entry = {
@@ -361,7 +430,8 @@ def main_process():
             'total_recommendations': len(recommendations),
             'winning_count': len(winning_details),
             'total_prize': total_prize,
-            'winning_details': winning_details_formatted
+            'winning_details': winning_details_formatted,
+            'duplex_info': duplex_data
         }
         
         # 更新主报告
@@ -369,6 +439,10 @@ def main_process():
         
         # 输出结果
         log_message(f"验证完成！推荐{len(recommendations)}注，中奖{len(winning_details)}注，总奖金{total_prize}元")
+        
+        if duplex_data:
+            duplex_summary = ', '.join([f"{pos}:{len(nums)}个" for pos, nums in duplex_data.items()])
+            log_message(f"复式推荐: {duplex_summary}")
         
         if winning_details:
             log_message("中奖详情:")
@@ -382,4 +456,4 @@ def main_process():
         manage_report(new_error=error_msg)
 
 if __name__ == "__main__":
-    main_process() 
+    main_process()

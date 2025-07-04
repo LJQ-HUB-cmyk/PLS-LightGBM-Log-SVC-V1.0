@@ -73,7 +73,8 @@ def get_latest_verification_result() -> Optional[Dict]:
         return None
 
 def send_wxpusher_message(content: str, title: str = None, topicIds: List[int] = None, uids: List[str] = None) -> Dict:
-    """发送微信推送消息
+    """
+    发送微信推送消息
     
     Args:
         content: 消息内容
@@ -84,8 +85,18 @@ def send_wxpusher_message(content: str, title: str = None, topicIds: List[int] =
     Returns:
         API响应结果字典
     """
+    import urllib3
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    
+    # 禁用SSL警告
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    
     url = "https://wxpusher.zjiecode.com/api/send/message"
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
     
     data = {
         "appToken": APP_TOKEN,
@@ -96,27 +107,73 @@ def send_wxpusher_message(content: str, title: str = None, topicIds: List[int] =
         "contentType": 1,  # 1=文本，2=HTML
     }
     
+    # 配置重试策略
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    
+    # 创建会话并配置适配器
+    session = requests.Session()
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
     try:
-        response = requests.post(url, json=data, headers=headers, timeout=30)
-        response.raise_for_status()
-        result = response.json()
-        
-        if result.get("success", False):
-            logging.info(f"微信推送成功: {title}")
-            return {"success": True, "data": result}
-        else:
-            logging.error(f"微信推送失败: {result.get('msg', '未知错误')}")
-            return {"success": False, "error": result.get('msg', '推送失败')}
-            
+        # 尝试多种方式发送请求
+        for attempt in range(3):
+            try:
+                if attempt == 0:
+                    # 第一次尝试：正常HTTPS请求
+                    response = session.post(url, json=data, headers=headers, timeout=30, verify=True)
+                elif attempt == 1:
+                    # 第二次尝试：禁用SSL验证
+                    response = session.post(url, json=data, headers=headers, timeout=30, verify=False)
+                else:
+                    # 第三次尝试：使用HTTP（如果服务支持）
+                    http_url = url.replace('https://', 'http://')
+                    response = session.post(http_url, json=data, headers=headers, timeout=30)
+                
+                response.raise_for_status()
+                result = response.json()
+                
+                if result.get("success", False):
+                    logging.info(f"微信推送成功: {title} (尝试次数: {attempt + 1})")
+                    return {"success": True, "data": result}
+                else:
+                    logging.error(f"微信推送失败: {result.get('msg', '未知错误')}")
+                    return {"success": False, "error": result.get('msg', '推送失败')}
+                    
+            except requests.exceptions.SSLError as ssl_e:
+                logging.warning(f"SSL错误 (尝试 {attempt + 1}/3): {ssl_e}")
+                if attempt == 2:  # 最后一次尝试也失败
+                    raise ssl_e
+                continue
+            except requests.exceptions.RequestException as req_e:
+                logging.warning(f"网络请求错误 (尝试 {attempt + 1}/3): {req_e}")
+                if attempt == 2:  # 最后一次尝试也失败
+                    raise req_e
+                continue
+                
+    except requests.exceptions.SSLError as e:
+        error_msg = f"SSL连接错误: {str(e)}。建议检查网络环境或联系管理员。"
+        logging.error(f"微信推送SSL错误: {error_msg}")
+        return {"success": False, "error": error_msg}
     except requests.exceptions.RequestException as e:
-        logging.error(f"微信推送网络错误: {e}")
-        return {"success": False, "error": f"网络错误: {str(e)}"}
+        error_msg = f"网络连接错误: {str(e)}"
+        logging.error(f"微信推送网络错误: {error_msg}")
+        return {"success": False, "error": error_msg}
     except Exception as e:
-        logging.error(f"微信推送异常: {e}")
-        return {"success": False, "error": f"未知异常: {str(e)}"}
+        error_msg = f"未知异常: {str(e)}"
+        logging.error(f"微信推送异常: {error_msg}")
+        return {"success": False, "error": error_msg}
+    finally:
+        session.close()
 
 def send_analysis_report(report_content: str, period: int, recommendations: List[str], 
-                         optuna_summary: Dict = None, backtest_stats: Dict = None) -> Dict:
+                         optuna_summary: Dict = None, backtest_stats: Dict = None, 
+                         duplex_reference: Dict = None) -> Dict:
     """发送排列三分析报告
     
     Args:
@@ -125,6 +182,7 @@ def send_analysis_report(report_content: str, period: int, recommendations: List
         recommendations: 推荐号码列表
         optuna_summary: Optuna优化摘要
         backtest_stats: 回测统计数据
+        duplex_reference: 复式参考数据 {'pos1': [1,2,3,4,5], 'pos2': [0,1,4,6,9], 'pos3': [1,4,6,7,9]}
     
     Returns:
         推送结果字典
@@ -186,15 +244,29 @@ def send_analysis_report(report_content: str, period: int, recommendations: List
                 else:
                     verification_info = f"📈 第{eval_period}期验证: 开奖{prize_str}，未中奖\n"
         
+        # 构建复式参考信息
+        duplex_info = ""
+        if duplex_reference:
+            pos1_nums = ' '.join(str(n) for n in duplex_reference.get('pos1', []))
+            pos2_nums = ' '.join(str(n) for n in duplex_reference.get('pos2', []))
+            pos3_nums = ' '.join(str(n) for n in duplex_reference.get('pos3', []))
+            duplex_info = f"""🎲 复式参考:
+• 百位: {pos1_nums}
+• 十位: {pos2_nums}
+• 个位: {pos3_nums}
+
+"""
+        
         # 组合最终推送内容
         content = f"""🎯 排列三第{period}期预测报告
 
 {verification_info}{optuna_info}{backtest_info}
 📋 本期推荐 ({len(recommendations)}注):
 {rec_summary}
-💡 投注建议：
+{duplex_info}💡 投注建议：
 • 直选投注：按推荐顺序投注
 • 组选投注：可组合投注降低风险
+• 复式投注：可根据复式参考组合投注
 • 建议控制投注金额，理性投注
 
 📊 分析说明：
@@ -317,20 +389,95 @@ def send_daily_summary(analysis_success: bool, verification_success: bool,
     
     return send_wxpusher_message(content, title)
 
+def send_wxpusher_message_fallback(content: str, title: str = None, topicIds: List[int] = None, uids: List[str] = None) -> Dict:
+    """
+    备用微信推送方法（使用更简单的方式）
+    
+    Args:
+        content: 消息内容
+        title: 消息标题
+        topicIds: 主题ID列表，默认使用全局配置
+        uids: 用户ID列表，默认使用全局配置
+    
+    Returns:
+        API响应结果字典
+    """
+    try:
+        import urllib.request
+        import urllib.parse
+        import ssl
+        
+        # 创建SSL上下文，忽略证书验证
+        ssl_context = ssl.create_default_context()
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        
+        url = "https://wxpusher.zjiecode.com/api/send/message"
+        
+        data = {
+            "appToken": APP_TOKEN,
+            "content": content,
+            "uids": uids or USER_UIDS,
+            "topicIds": topicIds or TOPIC_IDS,
+            "summary": title or "排列三推荐更新",
+            "contentType": 1,
+        }
+        
+        # 转换为JSON字符串
+        json_data = json.dumps(data).encode('utf-8')
+        
+        # 创建请求
+        req = urllib.request.Request(
+            url,
+            data=json_data,
+            headers={
+                'Content-Type': 'application/json',
+                'User-Agent': 'Python-urllib/3.0'
+            }
+        )
+        
+        # 发送请求
+        with urllib.request.urlopen(req, context=ssl_context, timeout=30) as response:
+            result_data = response.read().decode('utf-8')
+            result = json.loads(result_data)
+            
+            if result.get("success", False):
+                logging.info(f"微信推送成功 (备用方法): {title}")
+                return {"success": True, "data": result}
+            else:
+                logging.error(f"微信推送失败 (备用方法): {result.get('msg', '未知错误')}")
+                return {"success": False, "error": result.get('msg', '推送失败')}
+                
+    except Exception as e:
+        error_msg = f"备用推送方法失败: {str(e)}"
+        logging.error(error_msg)
+        return {"success": False, "error": error_msg}
+
+
 def test_wxpusher_connection() -> bool:
-    """测试微信推送连接
+    """
+    测试微信推送连接
     
     Returns:
         连接是否成功
     """
     test_content = f"🔔 排列三系统测试消息\n\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n如果您看到此消息，说明推送功能正常工作。"
+    
+    # 首先尝试主要方法
     result = send_wxpusher_message(test_content, "🔔 排列三系统测试")
     
-    return result.get("success", False)
+    if result.get("success", False):
+        return True
+    
+    # 如果主要方法失败，尝试备用方法
+    logging.info("主要推送方法失败，尝试备用方法...")
+    fallback_result = send_wxpusher_message_fallback(test_content, "🔔 排列三系统测试 (备用)")
+    
+    return fallback_result.get("success", False)
 
 if __name__ == "__main__":
     # 测试推送功能
     if test_wxpusher_connection():
         print("✅ 微信推送测试成功")
     else:
-        print("❌ 微信推送测试失败") 
+        print("❌ 微信推送测试失败")
