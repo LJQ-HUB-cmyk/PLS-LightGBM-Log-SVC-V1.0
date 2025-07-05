@@ -1244,13 +1244,48 @@ def main():
     """主程序入口"""
     # 1. 初始化日志记录器，同时输出到控制台和文件
     log_filename = os.path.join(SCRIPT_DIR, f"pls_analysis_output_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
-    file_handler = logging.FileHandler(log_filename, 'w', 'utf-8')
-    file_handler.setFormatter(detailed_formatter)
-    logger.addHandler(file_handler)
-    set_console_verbosity(logging.INFO, use_simple_formatter=True)
+    
+    # 在CI环境中输出调试信息
+    if os.getenv('CI') or os.getenv('GITHUB_ACTIONS'):
+        print(f"[DEBUG] 当前工作目录: {os.getcwd()}")
+        print(f"[DEBUG] 脚本目录: {SCRIPT_DIR}")
+        print(f"[DEBUG] 日志文件路径: {log_filename}")
+        print(f"[DEBUG] Python版本: {sys.version}")
+        print(f"[DEBUG] 环境变量PYTHONUNBUFFERED: {os.getenv('PYTHONUNBUFFERED')}")
+        print(f"[DEBUG] 环境变量CI: {os.getenv('CI')}")
+        print(f"[DEBUG] 环境变量GITHUB_ACTIONS: {os.getenv('GITHUB_ACTIONS')}")
+    
+    try:
+        file_handler = logging.FileHandler(log_filename, 'w', 'utf-8')
+        file_handler.setFormatter(detailed_formatter)
+        logger.addHandler(file_handler)
+        set_console_verbosity(logging.INFO, use_simple_formatter=True)
+        
+        # 强制刷新日志处理器
+        if os.getenv('CI') or os.getenv('GITHUB_ACTIONS'):
+            for handler in logger.handlers:
+                if hasattr(handler, 'flush'):
+                    handler.flush()
+                    
+    except Exception as log_init_error:
+        print(f"[ERROR] 日志初始化失败: {log_init_error}")
+        # 创建一个基本的控制台日志记录器
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
 
     logger.info("--- 排列三数据分析与推荐系统 ---")
     logger.info("启动数据加载和预处理...")
+    
+    # 在CI环境中额外输出调试信息
+    if os.getenv('CI') or os.getenv('GITHUB_ACTIONS'):
+        logger.info(f"CI环境检测: 当前工作目录 = {os.getcwd()}")
+        logger.info(f"CI环境检测: 脚本目录 = {SCRIPT_DIR}")
+        logger.info(f"CI环境检测: 日志文件是否创建 = {os.path.exists(log_filename)}")
+        if os.path.exists(log_filename):
+            logger.info(f"CI环境检测: 日志文件大小 = {os.path.getsize(log_filename)} 字节")
 
     # 2. 健壮的数据加载逻辑
     main_df = None
@@ -1463,13 +1498,72 @@ def main():
     
     # 10. 更新latest_pls_analysis.txt
     try:
-        with open(os.path.join(SCRIPT_DIR, 'latest_pls_analysis.txt'), 'w', encoding='utf-8') as f:
-            # 重新读取完整的日志文件内容
-            with open(log_filename, 'r', encoding='utf-8') as log_f:
-                f.write(log_f.read())
-        logger.info("已更新 latest_pls_analysis.txt")
+        latest_file_path = os.path.join(SCRIPT_DIR, 'latest_pls_analysis.txt')
+        
+        # 检查日志文件是否存在且有内容
+        if not os.path.exists(log_filename):
+            logger.error(f"日志文件不存在: {log_filename}")
+            # 创建一个基本的报告文件
+            with open(latest_file_path, 'w', encoding='utf-8') as f:
+                f.write(f"排列三分析报告\n")
+                f.write(f"生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"预测期号: 第{last_period + 1}期\n")
+                f.write(f"状态: 日志文件生成失败\n")
+        else:
+            log_file_size = os.path.getsize(log_filename)
+            logger.info(f"日志文件大小: {log_file_size} 字节")
+            
+            if log_file_size == 0:
+                logger.warning("日志文件为空，创建基本报告")
+                with open(latest_file_path, 'w', encoding='utf-8') as f:
+                    f.write(f"排列三分析报告\n")
+                    f.write(f"生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write(f"预测期号: 第{last_period + 1}期\n")
+                    f.write(f"状态: 分析完成但日志为空\n")
+                    if final_rec_strings:
+                        f.write(f"\n推荐号码:\n")
+                        for i, rec in enumerate(final_rec_strings):
+                            f.write(f"注 {i+1}: {rec}\n")
+            else:
+                # 复制完整的日志文件内容
+                with open(log_filename, 'r', encoding='utf-8') as log_f:
+                    content = log_f.read()
+                    
+                with open(latest_file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                    
+        # 验证生成的文件
+        if os.path.exists(latest_file_path):
+            final_file_size = os.path.getsize(latest_file_path)
+            logger.info(f"已更新 latest_pls_analysis.txt (大小: {final_file_size} 字节)")
+            
+            # 在CI环境中输出文件内容的前几行用于调试
+            if os.getenv('CI') or os.getenv('GITHUB_ACTIONS'):
+                logger.info("=== CI环境调试信息 ===")
+                try:
+                    with open(latest_file_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()[:10]  # 读取前10行
+                        logger.info(f"latest_pls_analysis.txt 前10行内容:")
+                        for i, line in enumerate(lines, 1):
+                            logger.info(f"第{i}行: {line.strip()}")
+                except Exception as debug_e:
+                    logger.error(f"读取文件用于调试失败: {debug_e}")
+        else:
+            logger.error("latest_pls_analysis.txt 文件创建失败")
+            
     except Exception as e:
         logger.error(f"更新 latest_pls_analysis.txt 失败: {e}")
+        # 尝试创建一个最小的报告文件
+        try:
+            emergency_path = os.path.join(SCRIPT_DIR, 'latest_pls_analysis.txt')
+            with open(emergency_path, 'w', encoding='utf-8') as f:
+                f.write(f"排列三分析报告 (紧急模式)\n")
+                f.write(f"生成时间: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"预测期号: 第{last_period + 1}期\n")
+                f.write(f"错误信息: {str(e)}\n")
+            logger.info("已创建紧急模式报告文件")
+        except Exception as emergency_e:
+            logger.critical(f"紧急模式报告文件创建也失败: {emergency_e}")
 
 
 def save_analysis_report(df: pd.DataFrame, freq_data: Dict, pattern_data: Dict, 

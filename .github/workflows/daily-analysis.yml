@@ -16,6 +16,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       TZ: Asia/Shanghai # Set timezone for consistent date/time operations
+      PYTHONUNBUFFERED: 1 # 确保Python输出不被缓冲
+      WXPUSHER_APP_TOKEN: ${{ secrets.WXPUSHER_APP_TOKEN || 'AT_FInZJJ0mUU8xvQjKRP7v6omvuHN3Fdqw' }}
+      WXPUSHER_USER_UIDS: ${{ secrets.WXPUSHER_USER_UIDS || 'UID_yYObqdMVScIa66DGR2n2PCRFL10w' }}
+      WXPUSHER_TOPIC_IDS: ${{ secrets.WXPUSHER_TOPIC_IDS || '39909' }}
 
     steps:
     - name: Checkout repository
@@ -43,13 +47,72 @@ jobs:
         pip install -r requirements.txt
 
     - name: Run data acquisition script
-      run: python pls_data_processor.py
+      run: |
+        echo "=== 运行数据获取脚本 ==="
+        python pls_data_processor.py
+        echo "数据获取脚本执行完成，检查生成的文件："
+        ls -la *.csv || echo "未找到CSV文件"
 
     - name: Run bonus calculation script
-      run: python pls_bonus_calculation.py
+      run: |
+        echo "=== 运行奖金计算脚本 ==="
+        python pls_bonus_calculation.py
+        echo "奖金计算脚本执行完成"
       
     - name: Run analysis script
-      run: python pls_analyzer.py
+      run: |
+        echo "=== 运行分析脚本前的调试信息 ==="
+        echo "当前工作目录: $(pwd)"
+        echo "Python版本: $(python --version)"
+        echo "系统信息: $(uname -a)"
+        echo "内存使用: $(free -h)"
+        echo "磁盘使用: $(df -h .)"
+        echo "环境变量检查:"
+        echo "PYTHONUNBUFFERED=$PYTHONUNBUFFERED"
+        echo "CI=$CI"
+        echo "GITHUB_ACTIONS=$GITHUB_ACTIONS"
+        echo "WXPUSHER_APP_TOKEN=${WXPUSHER_APP_TOKEN:0:10}..."
+        echo "文件列表:"
+        ls -la
+        echo "检查数据文件:"
+        if [ -f "pls.csv" ]; then
+          echo "pls.csv 存在，大小: $(wc -l < pls.csv) 行"
+        else
+          echo "pls.csv 不存在"
+        fi
+        if [ -f "pls_processed.csv" ]; then
+          echo "pls_processed.csv 存在，大小: $(wc -l < pls_processed.csv) 行"
+        else
+          echo "pls_processed.csv 不存在"
+        fi
+        echo "=== 开始运行分析脚本 ==="
+        python -u pls_analyzer.py 2>&1 | tee analysis_output.log
+        echo "=== 分析脚本运行完成，退出码: $? ==="
+        echo "=== 检查生成的所有文件 ==="
+        ls -la
+        echo "=== 检查所有 .txt 文件 ==="
+        find . -name "*.txt" -type f -exec ls -la {} \; 2>/dev/null || echo "没有找到 .txt 文件"
+        echo "=== 检查 latest_pls_analysis.txt ==="
+        if [ -f "latest_pls_analysis.txt" ]; then
+          echo "latest_pls_analysis.txt 存在"
+          echo "文件大小: $(wc -c < latest_pls_analysis.txt) 字节"
+          echo "文件行数: $(wc -l < latest_pls_analysis.txt) 行"
+          echo "文件权限: $(ls -la latest_pls_analysis.txt)"
+          echo "文件前20行内容:"
+          head -20 latest_pls_analysis.txt
+          echo "文件后10行内容:"
+          tail -10 latest_pls_analysis.txt
+        else
+          echo "latest_pls_analysis.txt 不存在"
+        fi
+        echo "=== 检查分析日志文件 ==="
+        find . -name "pls_analysis_output_*.txt" -type f -exec ls -la {} \; 2>/dev/null || echo "没有找到分析日志文件"
+        echo "=== 检查运行时日志 ==="
+        if [ -f "analysis_output.log" ]; then
+          echo "运行时日志大小: $(wc -c < analysis_output.log) 字节"
+          echo "运行时日志最后50行:"
+          tail -50 analysis_output.log
+        fi
 
     - name: Create fixed filename copy of latest analysis report
       run: |
