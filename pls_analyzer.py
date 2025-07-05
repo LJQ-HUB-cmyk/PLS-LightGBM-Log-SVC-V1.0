@@ -40,6 +40,12 @@ from lightgbm import LGBMClassifier
 from mlxtend.preprocessing import TransactionEncoder
 from mlxtend.frequent_patterns import apriori, association_rules
 import concurrent.futures
+import warnings
+
+# 抑制sklearn和其他库的警告信息
+warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
+warnings.filterwarnings('ignore', category=FutureWarning)
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 # ==============================================================================
 # --- 全局常量与配置 ---
@@ -260,7 +266,6 @@ def load_data(file_path: str) -> Optional[pd.DataFrame]:
         for encoding in encodings:
             try:
                 df = pd.read_csv(file_path, encoding=encoding)
-                logger.info(f"成功使用 {encoding} 编码加载数据")
                 break
             except UnicodeDecodeError:
                 continue
@@ -268,8 +273,6 @@ def load_data(file_path: str) -> Optional[pd.DataFrame]:
         if df is None:
             logger.error("无法使用任何编码读取数据文件")
             return None
-            
-        logger.info(f"加载数据: {len(df)} 行 x {len(df.columns)} 列")
         return df
         
     except Exception as e:
@@ -328,8 +331,6 @@ def clean_and_structure(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         df = df.sort_values('Seq').reset_index(drop=True)
         
         final_count = len(df)
-        logger.info(f"数据清理完成: {initial_count} -> {final_count} 行")
-        
         if final_count == 0:
             logger.error("清理后没有有效数据")
             return None
@@ -405,7 +406,6 @@ def feature_engineer(df: pd.DataFrame) -> Optional[pd.DataFrame]:
         
         df['form_type'] = df.apply(get_form_type, axis=1)
         
-        logger.info(f"特征工程完成，添加了 {len(df.columns) - 4} 个新特征")
         return df
         
     except Exception as e:
@@ -443,7 +443,6 @@ def create_lagged_features(df: pd.DataFrame, lags: List[int]) -> Optional[pd.Dat
         df = df.dropna()
         final_count = len(df)
         
-        logger.info(f"滞后特征创建完成，保留 {final_count}/{initial_count} 行数据")
         return df
         
     except Exception as e:
@@ -512,7 +511,6 @@ def analyze_frequency_omission(df: pd.DataFrame) -> dict:
             
             result[pos_name] = pos_analysis
         
-        logger.info("频率和遗漏分析完成")
         return result
         
     except Exception as e:
@@ -588,7 +586,6 @@ def analyze_patterns(df: pd.DataFrame) -> dict:
                 'most_common': form_distribution.idxmax() if not form_distribution.empty else 'group6'
             }
         
-        logger.info("模式分析完成")
         return result
         
     except Exception as e:
@@ -651,7 +648,6 @@ def analyze_associations(df: pd.DataFrame, weights_config: Dict) -> pd.DataFrame
         min_lift = weights_config.get('ARM_MIN_LIFT', 1.20)
         rules = rules[rules['lift'] >= min_lift]
         
-        logger.info(f"关联规则挖掘完成，发现 {len(rules)} 条有效规则")
         return rules
         
     except Exception as e:
@@ -730,7 +726,6 @@ def calculate_scores(freq_data: Dict, probabilities: Dict, weights: Dict) -> Dic
             return scores_dict
         
         scores = normalize_scores(scores)
-        logger.info("号码评分计算完成")
         return scores
         
     except Exception as e:
@@ -778,8 +773,6 @@ def train_prediction_models(df_train_raw: pd.DataFrame, ml_lags_list: List[int])
         训练好的模型字典或None
     """
     try:
-        logger.info("开始训练机器学习模型...")
-        
         # 准备训练数据
         df_with_features = feature_engineer(df_train_raw)
         if df_with_features is None:
@@ -808,11 +801,8 @@ def train_prediction_models(df_train_raw: pd.DataFrame, ml_lags_list: List[int])
                 model, error = train_single_lgbm_model(pos_name, num, X, y)
                 if model is not None:
                     position_models[num] = model
-                else:
-                    logger.debug(f"{pos_name}位置号码{num}训练失败: {error}")
             
             models[pos_name] = position_models
-            logger.info(f"{pos_name}位置训练完成，成功训练{len(position_models)}/10个模型")
         
         return models
         
@@ -847,10 +837,10 @@ def predict_next_draw_probabilities(df_historical: pd.DataFrame, trained_models:
         if df_with_lags is None or df_with_lags.empty:
             return {}
         
-        # 获取最新一行作为预测特征
+        # 获取最新一行作为预测特征（保持DataFrame格式以确保特征名称一致）
         feature_columns = [col for col in df_with_lags.columns 
                           if col not in ['Seq', 'red_1', 'red_2', 'red_3', 'form_type']]
-        latest_features = df_with_lags[feature_columns].iloc[-1:].values
+        latest_features = df_with_lags[feature_columns].iloc[-1:]
         
         predictions = {}
         
@@ -865,15 +855,13 @@ def predict_next_draw_probabilities(df_historical: pd.DataFrame, trained_models:
                         with SuppressOutput():
                             prob = model.predict_proba(latest_features)[0][1]  # 正类概率
                         position_predictions[num] = prob
-                    except Exception as e:
-                        logger.debug(f"预测{pos_name}位置号码{num}失败: {e}")
+                    except Exception:
                         position_predictions[num] = 0.1  # 默认概率
                 else:
                     position_predictions[num] = 0.1  # 默认概率
             
             predictions[pos_name] = position_predictions
         
-        logger.info("机器学习预测完成")
         return predictions
         
     except Exception as e:
@@ -895,8 +883,6 @@ def generate_combinations(scores_data: Dict, pattern_data: Dict, arm_rules: pd.D
         推荐组合列表和详细信息
     """
     try:
-        logger.info("开始生成推荐组合...")
-        
         # 获取各位置的候选号码
         candidates = {}
         top_n = weights_config.get('TOP_N_NUMBERS_FOR_CANDIDATE', 15)
@@ -963,7 +949,6 @@ def generate_combinations(scores_data: Dict, pattern_data: Dict, arm_rules: pd.D
                 f"模式{combo['pattern_bonus']:.1f} + ARM{combo['arm_bonus']:.1f})"
             )
         
-        logger.info(f"生成推荐组合完成，共{len(final_combinations)}注")
         return final_combinations, details
         
     except Exception as e:
@@ -1181,12 +1166,9 @@ def run_backtest(full_df: pd.DataFrame, ml_lags: List[int], weights_config: Dict
                                         is_direct=True) if period_best_combo else None
             })
 
-        # 打印进度
+        # 简化进度记录
         if current_iter == 1 or current_iter % 10 == 0 or current_iter == num_periods:
-            elapsed = time.time() - start_time
-            avg_time = elapsed / current_iter
-            remaining_time = avg_time * (num_periods - current_iter)
-            progress_logger.info(f"回测进度: {current_iter}/{num_periods} | 平均耗时: {avg_time:.2f}s/期 | 预估剩余: {format_time(remaining_time)}")
+            logger.info("策略回测已启动...")
             
     return pd.DataFrame(results), {'prize_counts': dict(prize_counts), 'best_hits_per_period': pd.DataFrame(best_hits_per_period)}
 
@@ -1230,14 +1212,8 @@ def objective(trial: optuna.trial.Trial, df_for_opt: pd.DataFrame, ml_lags: List
 
 def optuna_progress_callback(study: optuna.study.Study, trial: optuna.trial.FrozenTrial, total_trials: int):
     """Optuna 的回调函数，用于在控制台报告优化进度。"""
-    global OPTUNA_START_TIME
-    current_iter = trial.number + 1
-    if current_iter == 1 or current_iter % 10 == 0 or current_iter == total_trials:
-        elapsed = time.time() - OPTUNA_START_TIME
-        avg_time = elapsed / current_iter
-        remaining_time = avg_time * (total_trials - current_iter)
-        best_value = f"{study.best_value:.2f}" if study.best_trial else "N/A"
-        progress_logger.info(f"Optuna进度: {current_iter}/{total_trials} | 当前最佳得分: {best_value} | 预估剩余: {format_time(remaining_time)}")
+    # 简化日志输出，类似双色球的格式
+    logger.info("策略回测已启动...")
 
 
 def main():
@@ -1245,27 +1221,11 @@ def main():
     # 1. 初始化日志记录器，同时输出到控制台和文件
     log_filename = os.path.join(SCRIPT_DIR, f"pls_analysis_output_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
     
-    # 在CI环境中输出调试信息
-    if os.getenv('CI') or os.getenv('GITHUB_ACTIONS'):
-        print(f"[DEBUG] 当前工作目录: {os.getcwd()}")
-        print(f"[DEBUG] 脚本目录: {SCRIPT_DIR}")
-        print(f"[DEBUG] 日志文件路径: {log_filename}")
-        print(f"[DEBUG] Python版本: {sys.version}")
-        print(f"[DEBUG] 环境变量PYTHONUNBUFFERED: {os.getenv('PYTHONUNBUFFERED')}")
-        print(f"[DEBUG] 环境变量CI: {os.getenv('CI')}")
-        print(f"[DEBUG] 环境变量GITHUB_ACTIONS: {os.getenv('GITHUB_ACTIONS')}")
-    
     try:
         file_handler = logging.FileHandler(log_filename, 'w', 'utf-8')
         file_handler.setFormatter(detailed_formatter)
         logger.addHandler(file_handler)
         set_console_verbosity(logging.INFO, use_simple_formatter=True)
-        
-        # 强制刷新日志处理器
-        if os.getenv('CI') or os.getenv('GITHUB_ACTIONS'):
-            for handler in logger.handlers:
-                if hasattr(handler, 'flush'):
-                    handler.flush()
                     
     except Exception as log_init_error:
         print(f"[ERROR] 日志初始化失败: {log_init_error}")
@@ -1278,21 +1238,11 @@ def main():
 
     logger.info("--- 排列三数据分析与推荐系统 ---")
     logger.info("启动数据加载和预处理...")
-    
-    # 在CI环境中额外输出调试信息
-    if os.getenv('CI') or os.getenv('GITHUB_ACTIONS'):
-        logger.info(f"CI环境检测: 当前工作目录 = {os.getcwd()}")
-        logger.info(f"CI环境检测: 脚本目录 = {SCRIPT_DIR}")
-        logger.info(f"CI环境检测: 日志文件是否创建 = {os.path.exists(log_filename)}")
-        if os.path.exists(log_filename):
-            logger.info(f"CI环境检测: 日志文件大小 = {os.path.getsize(log_filename)} 字节")
 
     # 2. 健壮的数据加载逻辑
     main_df = None
     if os.path.exists(PROCESSED_CSV_PATH):
         main_df = load_data(PROCESSED_CSV_PATH)
-        if main_df is not None:
-             logger.info("从缓存文件加载预处理数据成功。")
 
     if main_df is None or main_df.empty:
         logger.info("未找到或无法加载缓存数据，正在从原始文件生成...")
@@ -1310,15 +1260,9 @@ def main():
                         logger.info(f"预处理数据已保存到: {PROCESSED_CSV_PATH}")
                     except IOError as e:
                         logger.error(f"保存预处理数据失败: {e}")
-                else:
-                    logger.error("特征工程失败，无法生成最终数据集。")
-            else:
-                logger.error("数据清洗失败。")
-        else:
-            logger.error("原始数据加载失败。")
     
     if main_df is None or main_df.empty:
-        logger.critical("数据准备失败，无法继续。请检查 'pls_data_processor.py' 是否已成功运行并生成 'pls.csv'。程序终止。")
+        logger.critical("数据准备失败，无法继续。程序终止。")
         sys.exit(1)
     
     logger.info(f"数据加载完成，共 {len(main_df)} 期有效数据。")
