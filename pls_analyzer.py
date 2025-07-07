@@ -96,7 +96,7 @@ RECENT_FREQ_WINDOW = 20
 # 在分析模式下，进行策略回测时所评估的总期数
 BACKTEST_PERIODS_COUNT = 10#默认100
 # 在优化模式下，每次试验用于快速评估性能的回测期数
-OPTIMIZATION_BACKTEST_PERIODS = 20
+OPTIMIZATION_BACKTEST_PERIODS = 100
 # 在优化模式下，Optuna 进行参数搜索的总试验次数
 OPTIMIZATION_TRIALS = 100
 # 训练机器学习模型时，一个号码在历史数据中至少需要出现的次数
